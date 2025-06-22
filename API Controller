@@ -1,0 +1,46 @@
+[ApiController]
+[Route("api/contacts")]
+public class ContactController : ControllerBase
+{
+    private readonly ContactDbContext _context;
+    public ContactController(ContactDbContext context) => _context = context;
+    [HttpPost]
+    public async Task<IActionResult> Identify([FromBody] Contact incoming)
+    {
+        var matches = await _context.Contacts
+            .Where(c => c.Email == incoming.Email || c.PhoneNumber == incoming.PhoneNumber)
+            .ToListAsync();
+
+        Contact primary;
+        if (!matches.Any())
+        {
+            primary = incoming;
+            _context.Contacts.Add(primary);
+        }
+        else
+        {
+            var allRelated = matches.SelectMany(m =>
+                _context.Contacts.Where(c => c.Id == m.Id || c.LinkedId == m.Id || m.LinkedId == c.Id)
+            ).Distinct().ToList();
+            primary = allRelated
+                .Where(c => c.LinkPrecedence == LinkPrecedence.Primary)
+                .OrderBy(c => c.CreatedAt)
+                .First();
+            var newContact = new Contact
+            {
+                Email = incoming.Email,
+                PhoneNumber = incoming.PhoneNumber,
+                LinkPrecedence = LinkPrecedence.Secondary,
+                LinkedId = primary.Id
+            };
+            _context.Contacts.Add(newContact);
+            foreach (var contact in allRelated.Where(c => c.LinkPrecedence == LinkPrecedence.Primary && c.Id != primary.Id))
+            {
+                contact.LinkPrecedence = LinkPrecedence.Secondary;
+                contact.LinkedId = primary.Id;
+                contact.UpdatedAt = DateTime.UtcNow;
+            }
+        }
+        await _context.SaveChangesAsync();
+        var related = _context.Contacts.Where(c => c.Id == primary.Id || c.LinkedId == primary.Id).ToList();
+        return Ok()
